@@ -21,8 +21,16 @@ struct NotchScratchpadView: View {
     @State private var hoveredPadID: UUID?
     @State private var editor = EditorHandle()
     @AppStorage(DefaultsKey.scratchpadTextSize) private var storedTextSize = ScratchpadSupport.defaultTextSize
+    @AppStorage(DefaultsKey.scratchpadFont) private var storedFont = ScratchpadFontOption.system.id
     private var text: ScratchpadFeatureStrings { FeatureStrings.scratchpad(l10n.language) }
     private var textSize: CGFloat { CGFloat(ScratchpadSupport.sanitizedTextSize(storedTextSize)) }
+    private var selectedFont: ScratchpadFontOption { ScratchpadFontOption.stored(storedFont) }
+    /// The placeholder is a SwiftUI `Text`, not the AppKit editor, so it
+    /// builds its face from the same option to sit on the first line.
+    private var placeholderFont: Font {
+        guard let family = selectedFont.family else { return .system(size: textSize) }
+        return .custom(family, size: textSize)
+    }
     private static let editorInset = NSSize(width: 6, height: 6)
 
     /// Holds the editor's text view so a tab change can aim the caret at it
@@ -52,11 +60,15 @@ struct NotchScratchpadView: View {
                     }
                     ZStack(alignment: .topLeading) {
                         PlainTextEditor(text: $pad.text, fontSize: textSize,
+                                        fontFamily: selectedFont.family,
                                         textColor: .white,
                                         textContainerInset: Self.editorInset,
                                         usesFindBar: true,
                                         completesTaskBoxes: true,
                                         continuesLists: true,
+                                        rendersTaskCheckboxes: true,
+                                        rendersInlineMath: true,
+                                        onToggleTask: { pad.toggleTask(box: $0, through: editor.view) },
                                         onCommandReturn: { pad.togglePreview() },
                                         isActive: !pad.isPreviewing) { view in
                             view.insertionPointColor = .white
@@ -73,7 +85,7 @@ struct NotchScratchpadView: View {
                                             onToggleTask: { pad.toggleTask(box: $0, through: editor.view) })
                         } else if pad.text.isEmpty {
                             Text(text.placeholder)
-                                .font(.system(size: textSize))
+                                .font(placeholderFont)
                                 .foregroundStyle(.white.opacity(0.35))
                                 .padding(.leading, Self.editorInset.width + PlainTextEditor.lineFragmentPadding)
                                 .padding(.top, Self.editorInset.height)

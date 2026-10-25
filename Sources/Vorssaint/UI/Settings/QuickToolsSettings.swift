@@ -21,6 +21,7 @@ struct QuickToolsSettings: View {
     @AppStorage(DefaultsKey.scratchpadCloseOnClickOutside) private var scratchpadCloseOnClickOutside = true
     @AppStorage(DefaultsKey.scratchpadBackgroundOpacity) private var scratchpadBackgroundOpacity = 0.0
     @AppStorage(DefaultsKey.scratchpadTextSize) private var scratchpadTextSize = ScratchpadSupport.defaultTextSize
+    @AppStorage(DefaultsKey.scratchpadFont) private var scratchpadFont = ScratchpadFontOption.default.id
     @AppStorage(DefaultsKey.micMuteMenuBarIndicator) private var micMenuBarIndicator = false
     @AppStorage(DefaultsKey.cleaningModeKeepScreenVisible) private var cleaningModeKeepScreenVisible = false
 
@@ -221,6 +222,12 @@ struct QuickToolsSettings: View {
                         .onChange(of: scratchpadCloseOnClickOutside) { _, _ in
                             ScratchpadService.shared.outsideClickPreferenceDidChange()
                         }
+                    Picker(FeatureStrings.scratchpad(l10n.language).font,
+                           selection: scratchpadFontBinding) {
+                        ForEach(ScratchpadFontOption.all) { option in
+                            Text(option.displayName).tag(option.id)
+                        }
+                    }
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text(FeatureStrings.scratchpad(l10n.language).textSize)
@@ -292,6 +299,15 @@ struct QuickToolsSettings: View {
         Binding(
             get: { ScratchpadSupport.sanitizedBackgroundOpacity(scratchpadBackgroundOpacity) },
             set: { scratchpadBackgroundOpacity = ScratchpadSupport.sanitizedBackgroundOpacity($0) }
+        )
+    }
+
+    /// An id that is no longer in the list, or whose family is gone, reads
+    /// back as the system face rather than leaving the picker blank.
+    private var scratchpadFontBinding: Binding<String> {
+        Binding(
+            get: { ScratchpadFontOption.stored(scratchpadFont).id },
+            set: { scratchpadFont = ScratchpadFontOption.stored($0).id }
         )
     }
 

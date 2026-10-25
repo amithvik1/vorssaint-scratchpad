@@ -204,11 +204,14 @@ private struct NotchScratchpadStill: View {
     @ObservedObject private var l10n = L10n.shared
     @Environment(\.notchBand) private var band
     @AppStorage(DefaultsKey.scratchpadTextSize) private var storedTextSize = ScratchpadSupport.defaultTextSize
+    @AppStorage(DefaultsKey.scratchpadFont) private var storedFont = ScratchpadFontOption.default.id
 
     var body: some View {
         let text = FeatureStrings.scratchpad(l10n.language)
+        let size = CGFloat(ScratchpadSupport.sanitizedTextSize(storedTextSize))
+        let font = ScratchpadFontOption.stored(storedFont)
         Text(pad.text.isEmpty ? text.placeholder : pad.text)
-            .font(.system(size: ScratchpadSupport.sanitizedTextSize(storedTextSize)))
+            .font(font.family.map { Font.custom($0, size: size) } ?? .system(size: size))
             .foregroundStyle(.white.opacity(pad.text.isEmpty ? 0.35 : 0.9))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(10)

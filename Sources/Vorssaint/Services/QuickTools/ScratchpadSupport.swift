@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Vorssaint
 
+import AppKit
 import Foundation
 
 /// How long each scratchpad keeps text that nobody edits. The check runs only
@@ -30,6 +31,44 @@ enum ScratchpadRetention: String, CaseIterable {
         }
         return retention
     }
+}
+
+/// One task line as the live editor reads it. The box and its `/x` shorthand
+/// stay in the plain text, so the same characters the editor draws are the
+/// ones the document stores and the preview parses.
+struct ScratchpadTaskLine: Equatable {
+    /// The UTF-16 offset of the box's `[`.
+    let box: Int
+    /// `[]`, `[ ]`, `[x]` or `[X]`.
+    let markerLength: Int
+    /// The bullet and the space after it when the task opens a list item,
+    /// including any quote bar or indentation before it. The editor hides it
+    /// and gives its width back, so the box sits where the bullet was rather
+    /// than after it.
+    let bulletRange: NSRange?
+    let checked: Bool
+    /// The line without its terminator, in UTF-16 units.
+    let lineRange: NSRange
+    /// The text after the box to the end of the line, in UTF-16 units.
+    /// Struck through when the task is done.
+    let textRange: NSRange
+    /// The `/x` that checks a task, together with the whitespace before it
+    /// and any trailing whitespace after it. Nil when the box is unchecked or
+    /// checked by its own mark.
+    let suffixRange: NSRange?
+}
+
+/// A line the editor can evaluate as arithmetic. The result is painted over
+/// the editor, never written into its text.
+struct ScratchpadMathLine: Equatable {
+    let expression: String
+    let value: Double
+    /// The value without a leading `=`; the editor paints `= …`.
+    let result: String
+    /// The UTF-16 range of the expression within its line.
+    let range: NSRange
+    /// The whole line without its terminator, in UTF-16 units.
+    let lineRange: NSRange
 }
 
 struct ScratchpadMarkdownBlock: Equatable {
@@ -320,11 +359,21 @@ enum ScratchpadSupport {
         text.markdownSourcePosition = nil
         let plain = ScratchpadMarkdownBlock(kind: block.kind, containerID: block.containerID, text: text,
                                             quoteDepth: block.quoteDepth)
+        // A task can open a bullet, as `- [ ]` does, or the line itself, as a
+        // bare `[]` does. Anything else is ordinary text.
+        let depth: Int
+        switch block.kind {
+        case .unorderedListItem(let listDepth):
+            depth = listDepth
+        case .paragraph:
+            depth = 1
+        default:
+            return plain
+        }
         // The box has to open the item as plain text: `[ ]` in code or
         // emphasis is only text, and so is an escaped or encoded bracket,
         // which reads the same but leaves no box where its run starts.
-        guard case .unorderedListItem(let depth) = block.kind,
-              let first, first.inlinePresentationIntent == nil, first.link == nil,
+        guard let first, first.inlinePresentationIntent == nil, first.link == nil,
               let position = first.markdownSourcePosition,
               // The parser's line and UTF-8 column, read against lines
               // counted here. Foundation's own conversion slips a line after
@@ -352,8 +401,28 @@ enum ScratchpadSupport {
             end = text.characters.index(after: end)
         }
         text.removeSubrange(opening..<end)
-        return ScratchpadMarkdownBlock(kind: .taskListItem(depth: depth, checked: marker.checked, box: box),
+        // `/x` at the end is the second way to check a task. It stays in the
+        // stored text so deleting it unchecks the box, but the reading does
+        // not show the command itself.
+        var checked = marker.checked
+        if let suffix = taskSuffix(in: String(text.characters)) {
+            checked = true
+            removeTaskSuffix(suffix, from: &text)
+        }
+        return ScratchpadMarkdownBlock(kind: .taskListItem(depth: depth, checked: checked, box: box),
                                        containerID: block.containerID, text: text, quoteDepth: block.quoteDepth)
+    }
+
+    /// Takes a `/x` suffix out of a block's reading while leaving every other
+    /// run, and every inline mark inside it, in place.
+    private static func removeTaskSuffix(_ suffix: NSRange, from text: inout AttributedString) {
+        let plain = String(text.characters)
+        guard let range = Range(suffix, in: plain) else { return }
+        let start = plain.distance(from: plain.startIndex, to: range.lowerBound)
+        let end = plain.distance(from: plain.startIndex, to: range.upperBound)
+        let lower = text.characters.index(text.characters.startIndex, offsetBy: start)
+        let upper = text.characters.index(text.characters.startIndex, offsetBy: end)
+        text.removeSubrange(lower..<upper)
     }
 
     /// Where each line of `text` starts, ending lines at \n, \r\n and a lone
@@ -387,14 +456,251 @@ enum ScratchpadSupport {
         return (mark != " ", 3)
     }
 
+    /// Every task the live editor draws. A box can open a bullet or the line
+    /// itself, can sit in a quote, and is checked either by its own `x` or by
+    /// a `/x` at the end of the line. Lines in a fenced code block are text.
+    static func taskLines(in text: String) -> [ScratchpadTaskLine] {
+        guard !text.isEmpty else { return [] }
+        let ns = text as NSString
+        var lines: [ScratchpadTaskLine] = []
+        var location = 0
+        var inFence = false
+        while location < ns.length {
+            let fullLine = ns.lineRange(for: NSRange(location: location, length: 0))
+            var content = fullLine
+            while content.length > 0, isLineBreak(ns.character(at: NSMaxRange(content) - 1)) {
+                content.length -= 1
+            }
+            let body = ns.substring(with: content)
+            let trimmedBody = body.trimmingCharacters(in: .whitespaces)
+            if trimmedBody.hasPrefix("```") || trimmedBody.hasPrefix("~~~") {
+                inFence.toggle()
+            } else if !inFence, let task = taskLine(in: ns, content: content) {
+                lines.append(task)
+            }
+            let next = NSMaxRange(fullLine)
+            if next <= location { break }
+            location = next
+        }
+        return lines
+    }
+
+    /// The task a line's content opens, or nil when the line is not one. The
+    /// box may follow indentation, quote bars and bullets, as Markdown allows.
+    private static func taskLine(in ns: NSString, content: NSRange) -> ScratchpadTaskLine? {
+        var index = content.location
+        let end = NSMaxRange(content)
+        var bullet: Int?
+        while index < end {
+            let unit = ns.character(at: index)
+            if isHorizontalSpace(unit) {
+                index += 1
+                continue
+            }
+            if unit == 62 { // >
+                index += 1
+                if index < end, isHorizontalSpace(ns.character(at: index)) { index += 1 }
+                continue
+            }
+            // A bullet takes its following whitespace with it, so a bare box
+            // after it still starts the task's text.
+            if unit == 45 || unit == 42 || unit == 43 { // - * +
+                let after = index + 1
+                guard after < end, isHorizontalSpace(ns.character(at: after)) else { break }
+                bullet = index
+                index = after
+                while index < end, isHorizontalSpace(ns.character(at: index)) { index += 1 }
+                continue
+            }
+            break
+        }
+        guard let marker = taskMarker(in: ns, at: index, lineEnd: end) else { return nil }
+        let markerEnd = index + marker.length
+        let suffix = taskSuffix(in: ns, lineContent: content, from: markerEnd)
+        let bulletRange = bullet.map { NSRange(location: $0, length: index - $0) }
+        return ScratchpadTaskLine(
+            box: index,
+            markerLength: marker.length,
+            bulletRange: bulletRange,
+            checked: marker.checked || suffix != nil,
+            lineRange: content,
+            textRange: NSRange(location: markerEnd, length: end - markerEnd),
+            suffixRange: suffix)
+    }
+
+    /// The task suffix `/x` at the end of a whole string, as a block's reading
+    /// sees it. Nil unless it closes the text.
+    static func taskSuffix(in text: String) -> NSRange? {
+        let ns = text as NSString
+        guard ns.length > 0 else { return nil }
+        return taskSuffix(in: ns,
+                          lineContent: NSRange(location: 0, length: ns.length),
+                          from: 0)
+    }
+
+    /// `/x` at the end of a task's text: the two characters, the whitespace
+    /// before them and any whitespace after them. The whitespace is required
+    /// so a word or a URL ending in `/x` is not a command.
+    private static func taskSuffix(in ns: NSString,
+                                   lineContent: NSRange,
+                                   from start: Int) -> NSRange? {
+        let contentEnd = NSMaxRange(lineContent)
+        var end = contentEnd
+        while end > start, isWhitespace(ns.character(at: end - 1)) { end -= 1 }
+        guard end - start >= 2 else { return nil }
+        let slash = end - 2
+        guard ns.character(at: slash) == 47, // /
+              ns.character(at: slash + 1) == 120 || ns.character(at: slash + 1) == 88 // x X
+        else { return nil }
+        var suffixStart = slash
+        while suffixStart > start, isWhitespace(ns.character(at: suffixStart - 1)) {
+            suffixStart -= 1
+        }
+        // `/x` standing alone is the whole text; anywhere else it needs the
+        // space that separates a command from the task.
+        guard suffixStart < slash || slash == start else { return nil }
+        return NSRange(location: suffixStart, length: contentEnd - suffixStart)
+    }
+
+    private static func taskMarker(in ns: NSString,
+                                   at index: Int,
+                                   lineEnd: Int) -> (checked: Bool, length: Int)? {
+        guard index < lineEnd, ns.character(at: index) == 91 else { return nil }
+        if index + 1 < lineEnd, ns.character(at: index + 1) == 93 { // []
+            guard index + 2 == lineEnd || isHorizontalSpace(ns.character(at: index + 2)) else { return nil }
+            return (false, 2)
+        }
+        guard index + 2 < lineEnd, ns.character(at: index + 2) == 93 else { return nil }
+        let mark = ns.character(at: index + 1)
+        guard mark == 32 || mark == 120 || mark == 88 else { return nil }
+        guard index + 3 == lineEnd || isHorizontalSpace(ns.character(at: index + 3)) else { return nil }
+        return (mark != 32, 3)
+    }
+
+    private static func isHorizontalSpace(_ unit: unichar) -> Bool {
+        unit == 32 || unit == 9
+    }
+
+    private static func isLineBreak(_ unit: unichar) -> Bool {
+        unit == 10 || unit == 13
+    }
+
+    private static func isWhitespace(_ unit: unichar) -> Bool {
+        UnicodeScalar(unit).map(CharacterSet.whitespacesAndNewlines.contains) ?? false
+    }
+
     static let taskScheme = "vorssaint-task"
 
     /// The edit that checks or unchecks the box whose `[` sits at UTF-16
     /// offset `box`, or nil when the text holds no box there any more.
     static func taskToggleEdit(box: Int, in text: String) -> (range: NSRange, replacement: String)? {
         guard let current = taskBox(at: box, in: text) else { return nil }
-        if current.length == 2 { return (NSRange(location: box + 1, length: 0), "x") }
-        return (NSRange(location: box + 1, length: 1), current.checked ? " " : "x")
+        let ns = text as NSString
+        var line = ns.lineRange(for: NSRange(location: box, length: 0))
+        while line.length > 0, isLineBreak(ns.character(at: NSMaxRange(line) - 1)) {
+            line.length -= 1
+        }
+        let suffix = taskSuffix(in: ns, lineContent: line, from: box + current.length)
+        guard let suffix else {
+            if current.length == 2 { return (NSRange(location: box + 1, length: 0), "x") }
+            return (NSRange(location: box + 1, length: 1), current.checked ? " " : "x")
+        }
+        // `/x` checks the task without touching the box. A click takes the
+        // command away, and unchecks the box too if it carried its own x.
+        let replacement = NSMutableString(string: ns.substring(with: line))
+        replacement.deleteCharacters(in: NSRange(location: suffix.location - line.location,
+                                                 length: suffix.length))
+        if current.length == 3 {
+            replacement.replaceCharacters(in: NSRange(location: box - line.location + 1, length: 1),
+                                          with: " ")
+        }
+        return (line, replacement as String)
+    }
+
+    /// Every line the editor can show a result beside. A line has to be
+    /// arithmetic from end to end; a sentence that happens to contain a sum
+    /// is left alone. Marks and the `/x` command are stripped first, so a
+    /// task can hold a calculation too.
+    static func mathLines(in text: String) -> [ScratchpadMathLine] {
+        guard !text.isEmpty else { return [] }
+        let ns = text as NSString
+        var lines: [ScratchpadMathLine] = []
+        var location = 0
+        var inFence = false
+        while location < ns.length {
+            let fullLine = ns.lineRange(for: NSRange(location: location, length: 0))
+            var content = fullLine
+            while content.length > 0, isLineBreak(ns.character(at: NSMaxRange(content) - 1)) {
+                content.length -= 1
+            }
+            let body = ns.substring(with: content)
+            let trimmedBody = body.trimmingCharacters(in: .whitespaces)
+            if trimmedBody.hasPrefix("```") || trimmedBody.hasPrefix("~~~") {
+                inFence.toggle()
+            } else if !inFence, let line = mathLine(in: ns, content: content) {
+                lines.append(line)
+            }
+            let next = NSMaxRange(fullLine)
+            if next <= location { break }
+            location = next
+        }
+        return lines
+    }
+
+    private static func mathLine(in ns: NSString, content: NSRange) -> ScratchpadMathLine? {
+        var start = content.location
+        let end = NSMaxRange(content)
+        while start < end, isHorizontalSpace(ns.character(at: start)) { start += 1 }
+        // Strip the containers an expression can sit in: quote bars, bullets
+        // and a task's box, in any order, as the line could be written.
+        var stripped = true
+        while stripped {
+            stripped = false
+            if start < end, ns.character(at: start) == 62 { // >
+                start += 1
+                if start < end, isHorizontalSpace(ns.character(at: start)) { start += 1 }
+                stripped = true
+                continue
+            }
+            if start + 1 < end,
+               ns.character(at: start) == 45 || ns.character(at: start) == 42 || ns.character(at: start) == 43,
+               isHorizontalSpace(ns.character(at: start + 1)) {
+                start += 2
+                while start < end, isHorizontalSpace(ns.character(at: start)) { start += 1 }
+                stripped = true
+                continue
+            }
+            if let marker = taskMarker(in: ns, at: start, lineEnd: end) {
+                start += marker.length
+                if start < end, isHorizontalSpace(ns.character(at: start)) { start += 1 }
+                stripped = true
+                continue
+            }
+        }
+        var expressionEnd = end
+        while expressionEnd > start, isWhitespace(ns.character(at: expressionEnd - 1)) {
+            expressionEnd -= 1
+        }
+        if let suffix = taskSuffix(in: ns, lineContent: content, from: start) {
+            expressionEnd = min(expressionEnd, suffix.location)
+            while expressionEnd > start, isWhitespace(ns.character(at: expressionEnd - 1)) {
+                expressionEnd -= 1
+            }
+        }
+        // `2 + 2 =` is a calculation too; the sign is not part of it.
+        if expressionEnd > start, ns.character(at: expressionEnd - 1) == 61 {
+            expressionEnd -= 1
+            while expressionEnd > start, isWhitespace(ns.character(at: expressionEnd - 1)) {
+                expressionEnd -= 1
+            }
+        }
+        guard expressionEnd > start else { return nil }
+        let range = NSRange(location: start, length: expressionEnd - start)
+        let expression = ns.substring(with: range)
+        guard let value = ScratchpadMath.evaluate(expression),
+              let result = ScratchpadMath.formatted(value) else { return nil }
+        return ScratchpadMathLine(expression: expression, value: value, result: result,
+                                  range: range, lineRange: content)
     }
 
     private static let listMarker = try? NSRegularExpression(
@@ -538,6 +844,257 @@ enum ScratchpadSupport {
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
         return "\(safeTitle) \(formatter.string(from: date)).txt"
+    }
+}
+
+/// The arithmetic behind the scratchpad's live result. It is deliberately a
+/// small, self-contained parser rather than `NSExpression`: a half-typed line
+/// is normal here, and it needs no key paths, functions or dynamic lookup to
+/// turn `12 * 4 + 7` into 55.
+enum ScratchpadMath {
+    static func evaluate(_ expression: String) -> Double? {
+        guard let tokens = tokens(expression), !tokens.isEmpty else { return nil }
+        var parser = Parser(tokens: tokens)
+        return parser.parse()
+    }
+
+    /// A result a person would write: no exponent for ordinary sums, no
+    /// trailing zeros, and at most eight places for fractions. Values that are
+    /// too large or too small for that read in scientific notation instead.
+    static func formatted(_ value: Double) -> String? {
+        guard value.isFinite else { return nil }
+        if value == 0 { return "0" }
+        let magnitude = abs(value)
+        if magnitude >= 1e15 || magnitude < 1e-8 {
+            return String(format: "%.8g", locale: Locale(identifier: "en_US_POSIX"), value)
+        }
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = false
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 8
+        formatter.minimumIntegerDigits = 1
+        return formatter.string(from: NSNumber(value: value))
+    }
+
+    private enum Token: Equatable {
+        case number(Double)
+        case plus, minus, times, divide, modulo, power
+        case leftParen, rightParen
+    }
+
+    private static func tokens(_ expression: String) -> [Token]? {
+        let scalars = Array(expression.unicodeScalars)
+        var tokens: [Token] = []
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                index += 1
+                continue
+            }
+            switch scalar {
+            case "+":
+                tokens.append(.plus)
+                index += 1
+            case "-", "−":
+                tokens.append(.minus)
+                index += 1
+            case "*", "×":
+                tokens.append(.times)
+                index += 1
+            case "/", "÷":
+                tokens.append(.divide)
+                index += 1
+            case "%":
+                tokens.append(.modulo)
+                index += 1
+            case "^":
+                tokens.append(.power)
+                index += 1
+            // Square and curly brackets group like parentheses: a line typed
+            // as `[2 + 3] * 4` is the same sum to whoever wrote it.
+            case "(", "[", "{":
+                tokens.append(.leftParen)
+                index += 1
+            case ")", "]", "}":
+                tokens.append(.rightParen)
+                index += 1
+            default:
+                guard CharacterSet.decimalDigits.contains(scalar) || scalar == "." else {
+                    return nil
+                }
+                var number = ""
+                var sawDot = false
+                while index < scalars.count {
+                    let next = scalars[index]
+                    if CharacterSet.decimalDigits.contains(next) {
+                        number.unicodeScalars.append(next)
+                        index += 1
+                    } else if next == "." {
+                        if sawDot { return nil }
+                        sawDot = true
+                        number.unicodeScalars.append(next)
+                        index += 1
+                    } else {
+                        break
+                    }
+                }
+                guard let value = Double(number), value.isFinite else { return nil }
+                tokens.append(.number(value))
+            }
+        }
+        return tokens
+    }
+
+    private struct Parser {
+        let tokens: [Token]
+        var index = 0
+        var hasBinaryOperator = false
+
+        mutating func parse() -> Double? {
+            guard let value = expression(), index == tokens.count, hasBinaryOperator, value.isFinite
+            else { return nil }
+            return value
+        }
+
+        private func peek() -> Token? {
+            index < tokens.count ? tokens[index] : nil
+        }
+
+        private mutating func advance() {
+            index += 1
+        }
+
+        private mutating func expression() -> Double? {
+            guard var value = term() else { return nil }
+            while let token = peek() {
+                switch token {
+                case .plus:
+                    advance()
+                    guard let right = term() else { return nil }
+                    value += right
+                    hasBinaryOperator = true
+                case .minus:
+                    advance()
+                    guard let right = term() else { return nil }
+                    value -= right
+                    hasBinaryOperator = true
+                default:
+                    return value
+                }
+            }
+            return value
+        }
+
+        private mutating func term() -> Double? {
+            guard var value = unary() else { return nil }
+            while let token = peek() {
+                switch token {
+                case .times:
+                    advance()
+                    guard let right = unary() else { return nil }
+                    value *= right
+                    hasBinaryOperator = true
+                case .divide:
+                    advance()
+                    guard let right = unary(), right != 0 else { return nil }
+                    value /= right
+                    hasBinaryOperator = true
+                case .modulo:
+                    advance()
+                    guard let right = unary(), right != 0 else { return nil }
+                    value = fmod(value, right)
+                    hasBinaryOperator = true
+                case .leftParen:
+                    // `2(3 + 4)` is a product, as it is on paper. Two bare
+                    // numbers side by side stay unread, so `2 3` is not 6.
+                    guard let right = unary() else { return nil }
+                    value *= right
+                    hasBinaryOperator = true
+                default:
+                    return value
+                }
+            }
+            return value
+        }
+
+        private mutating func unary() -> Double? {
+            if peek() == .plus {
+                advance()
+                return unary()
+            }
+            if peek() == .minus {
+                advance()
+                guard let value = unary() else { return nil }
+                return -value
+            }
+            return power()
+        }
+
+        /// A power is the one operator that groups to the right, so 2^3^2 is
+        /// 2^(3^2), and a sign written before it stays outside the base.
+        private mutating func power() -> Double? {
+            guard let base = primary() else { return nil }
+            guard peek() == .power else { return base }
+            advance()
+            guard let exponent = unary() else { return nil }
+            hasBinaryOperator = true
+            return pow(base, exponent)
+        }
+
+        private mutating func primary() -> Double? {
+            guard let token = peek() else { return nil }
+            switch token {
+            case .number(let value):
+                advance()
+                return value
+            case .leftParen:
+                advance()
+                guard let value = expression(), peek() == .rightParen else { return nil }
+                advance()
+                return value
+            default:
+                return nil
+            }
+        }
+    }
+}
+
+/// One face the scratchpad can draw in. A small set rather than a font panel:
+/// plain text carries no font information of its own, so a pad is either in
+/// one face or another, and the choice is about how a note reads, not about
+/// matching a particular document.
+struct ScratchpadFontOption: Equatable, Identifiable {
+    /// What the setting stores; stable across runs, and independent of the
+    /// family name so a later rename cannot orphan the saved choice.
+    let id: String
+    /// The name the picker shows. Font names are proper nouns, so they are
+    /// the same in every language.
+    let displayName: String
+    /// The family the editor draws with, or nil for the system face, which
+    /// takes the system API rather than a family lookup.
+    let family: String?
+
+    static let system = ScratchpadFontOption(id: "system", displayName: "System", family: nil)
+    static let menlo = ScratchpadFontOption(id: "menlo", displayName: "Menlo", family: "Menlo")
+    static let courier = ScratchpadFontOption(id: "courier", displayName: "Courier New", family: "Courier New")
+    static let avenir = ScratchpadFontOption(id: "avenir", displayName: "Avenir", family: "Avenir")
+    static let palatino = ScratchpadFontOption(id: "palatino", displayName: "Palatino", family: "Palatino")
+    static let georgia = ScratchpadFontOption(id: "georgia", displayName: "Georgia", family: "Georgia")
+
+    static let all: [ScratchpadFontOption] = [.system, .menlo, .courier, .avenir, .palatino, .georgia]
+
+    static let `default` = system
+
+    /// The option whose id was stored, or the system face when nothing was
+    /// stored, the stored id is unknown, or its family is not installed on
+    /// this Mac. A pad never opens in a face that is not there.
+    static func stored(_ raw: String?) -> ScratchpadFontOption {
+        guard let raw, let option = all.first(where: { $0.id == raw }) else { return `default` }
+        if let family = option.family, NSFont(name: family, size: 12) == nil { return `default` }
+        return option
     }
 }
 

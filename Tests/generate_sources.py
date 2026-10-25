@@ -974,6 +974,8 @@ def main():
           + declaration("Sources/Vorssaint/UI/Notch/NotchComponents.swift", "struct NotchRail<")
           + declaration("Sources/Vorssaint/UI/PlainTextEditor.swift", "struct PlainTextEditor:")
               .replace("        private func moveLine(", "        func moveLine(", 1)
+          + declaration("Sources/Vorssaint/UI/Scratchpad/ScratchpadEditorOverlay.swift",
+                        "final class ScratchpadEditorOverlay:")
           + declaration(scratchpad_view, "struct NotchScratchpadView:")
           + "".join(declaration(scratchpad_reading, prefix) for prefix in [
               "struct MarkdownPreview:", "final class TaskBoxAttachment:", "final class TaskPreviewTextView:"])

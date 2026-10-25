@@ -53,6 +53,7 @@ struct ScratchpadFeatureStrings {
     let markLink: String
     let formatMarks: String
     let textSize: String
+    let font: String
 }
 
 extension FeatureStrings {
@@ -124,7 +125,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Code",
         markLink: "Link",
         formatMarks: "Formatting",
-        textSize: "Text size"
+        textSize: "Text size",
+        font: "Font"
     )
 
     static let ptBR = ScratchpadFeatureStrings(
@@ -173,7 +175,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Código",
         markLink: "Link",
         formatMarks: "Formatação",
-        textSize: "Tamanho do texto"
+        textSize: "Tamanho do texto",
+        font: "Fonte"
     )
 
     static let tr = ScratchpadFeatureStrings(
@@ -222,7 +225,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Kod",
         markLink: "Bağlantı",
         formatMarks: "Biçimlendirme",
-        textSize: "Metin boyutu"
+        textSize: "Metin boyutu",
+        font: "Yazı tipi"
     )
 
     static let ru = ScratchpadFeatureStrings(
@@ -271,7 +275,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Код",
         markLink: "Ссылка",
         formatMarks: "Форматирование",
-        textSize: "Размер текста"
+        textSize: "Размер текста",
+        font: "Шрифт"
     )
 
     static let es = ScratchpadFeatureStrings(
@@ -320,7 +325,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Código",
         markLink: "Enlace",
         formatMarks: "Formato",
-        textSize: "Tamaño del texto"
+        textSize: "Tamaño del texto",
+        font: "Fuente"
     )
 
     static let sk = ScratchpadFeatureStrings(
@@ -369,7 +375,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Kód",
         markLink: "Odkaz",
         formatMarks: "Formátovanie",
-        textSize: "Veľkosť textu"
+        textSize: "Veľkosť textu",
+        font: "Písmo"
     )
 
     static let de = ScratchpadFeatureStrings(
@@ -418,7 +425,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Code",
         markLink: "Link",
         formatMarks: "Formatierung",
-        textSize: "Textgröße"
+        textSize: "Textgröße",
+        font: "Schrift"
     )
 
     static let fr = ScratchpadFeatureStrings(
@@ -467,7 +475,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Code",
         markLink: "Lien",
         formatMarks: "Mise en forme",
-        textSize: "Taille du texte"
+        textSize: "Taille du texte",
+        font: "Police"
     )
 
     static let it = ScratchpadFeatureStrings(
@@ -516,7 +525,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Codice",
         markLink: "Collegamento",
         formatMarks: "Formattazione",
-        textSize: "Dimensione del testo"
+        textSize: "Dimensione del testo",
+        font: "Font"
     )
 
     static let ja = ScratchpadFeatureStrings(
@@ -565,7 +575,8 @@ extension ScratchpadFeatureStrings {
         markCode: "コード",
         markLink: "リンク",
         formatMarks: "書式",
-        textSize: "文字サイズ"
+        textSize: "文字サイズ",
+        font: "フォント"
     )
 
     static let ko = ScratchpadFeatureStrings(
@@ -614,7 +625,8 @@ extension ScratchpadFeatureStrings {
         markCode: "코드",
         markLink: "링크",
         formatMarks: "서식",
-        textSize: "텍스트 크기"
+        textSize: "텍스트 크기",
+        font: "글꼴"
     )
 
     static let zhHans = ScratchpadFeatureStrings(
@@ -663,7 +675,8 @@ extension ScratchpadFeatureStrings {
         markCode: "代码",
         markLink: "链接",
         formatMarks: "格式",
-        textSize: "文字大小"
+        textSize: "文字大小",
+        font: "字体"
     )
 
     static let zhTW = ScratchpadFeatureStrings(
@@ -712,7 +725,8 @@ extension ScratchpadFeatureStrings {
         markCode: "程式碼",
         markLink: "連結",
         formatMarks: "格式",
-        textSize: "文字大小"
+        textSize: "文字大小",
+        font: "字體"
     )
 
     static let zhHK = ScratchpadFeatureStrings(
@@ -761,7 +775,8 @@ extension ScratchpadFeatureStrings {
         markCode: "程式碼",
         markLink: "連結",
         formatMarks: "格式",
-        textSize: "文字大小"
+        textSize: "文字大小",
+        font: "字體"
     )
     static let uk = ScratchpadFeatureStrings(
         pageTitle: "Нотатник",
@@ -809,7 +824,8 @@ extension ScratchpadFeatureStrings {
         markCode: "Код",
         markLink: "Посилання",
         formatMarks: "Форматування",
-        textSize: "Розмір тексту"
+        textSize: "Розмір тексту",
+        font: "Шрифт"
     )
 }
 

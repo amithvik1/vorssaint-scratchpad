@@ -259,6 +259,19 @@ enum ScratchpadMarkTests {
         expect(ScratchpadSupport.defaultTextSize == 13,
                "an untouched pad keeps the 13 it drew at before the slider")
 
+        // The face is stored by a stable id rather than by family name, and a
+        // saved choice that no longer names an option opens in the system face
+        // instead of leaving the pad unreadable or the picker blank.
+        expect(ScratchpadFontOption.stored(nil) == .system,
+               "a pad with no saved face draws in the system face")
+        expect(ScratchpadFontOption.stored(ScratchpadFontOption.menlo.id) == .menlo,
+               "a saved face is found by its id")
+        expect(ScratchpadFontOption.stored("typewriter-from-2011") == .system,
+               "an unknown saved face falls back to the system face")
+        expect((4...6).contains(ScratchpadFontOption.all.count)
+                && Set(ScratchpadFontOption.all.map(\.id)).count == ScratchpadFontOption.all.count,
+               "the picker offers a small set with unique ids")
+
         // A range that outlived the text it was measured against is clamped
         // rather than trusted; NSString would raise on it.
         let stale = applying(.bold, to: "hi", NSRange(location: 40, length: 9))
@@ -406,5 +419,81 @@ enum ScratchpadMarkTests {
         expect(lineBreak("plain text") == "plain text\n" && lineBreak("- [ ] split here", caretAt: 6) == "- [ ] \n- [ ] split here"
                && lineBreak("- item", caretAt: 1) == "-\n item",
                "Shift-Return outside a list is a plain line, and inside one splits the item at the caret")
+
+        // The live editor's own reading of tasks. It sees a box at the start
+        // of a line, under a bullet, inside a quote, and in fenced code it
+        // sees only text. `/x` at the end is the second way to check one.
+        let liveSource = "- [ ] a\n- [x] b\n- [] c\n  * [ ] d /x\n```\n- [ ] code\n```\n> - [X] quote"
+        let liveTasks = ScratchpadSupport.taskLines(in: liveSource)
+        expect(liveTasks.map(\.box) == [2, 10, 18, 27, 59]
+               && liveTasks.map(\.markerLength) == [3, 3, 2, 3, 3]
+               && liveTasks.map(\.bulletRange?.length) == [2, 2, 2, 2, 2]
+               && liveTasks.map(\.checked) == [false, true, false, true, true],
+               "the editor finds each task at its own box, with a bare box and /x understood")
+        expect(ScratchpadSupport.taskLines(in: "[] bare").first?.bulletRange == nil,
+               "a bare box has no bullet to hide")
+        expect(liveTasks[3].suffixRange == NSRange(location: 32, length: 3),
+               "the /x command keeps the space before it, so removing it leaves clean text")
+
+        func clickedBox(_ text: String) -> String? {
+            guard let edit = ScratchpadSupport.taskToggleEdit(box: 2, in: text) else { return nil }
+            return (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+        }
+        expect(clickedBox("- [ ] buy milk") == "- [x] buy milk"
+               && clickedBox("- [] buy milk") == "- [x] buy milk"
+               && clickedBox("- [x] done") == "- [ ] done",
+               "clicking a box still checks and unchecks its own mark")
+        expect(clickedBox("- [ ] buy milk /x") == "- [ ] buy milk"
+               && clickedBox("- [x] done /x") == "- [ ] done"
+               && clickedBox("- [ ] a /x later") == "- [x] a /x later"
+               && clickedBox("- [ ] a/x") == "- [x] a/x",
+               "clicking a task checked by /x removes the command, and a /x that is not at the end is text")
+        let suffixReading = ScratchpadSupport.markdownPreview("- [ ] buy milk /x")
+        expect(suffixReading.count == 1
+               && suffixReading[0].kind == .taskListItem(depth: 1, checked: true, box: 2)
+               && String(suffixReading[0].text.characters) == "buy milk",
+               "the reading checks a /x task and does not show the command")
+        expect(ScratchpadSupport.markdownPreview("[] buy milk").first?.kind
+                    == .taskListItem(depth: 1, checked: false, box: 0),
+               "a bare box that opens a line is a task in the reading too")
+
+        // Arithmetic is parsed only when the whole line is the expression.
+        // `NSExpression` throws on a half-typed line and has no source range;
+        // this parser stops at the first unknown character instead.
+        func value(_ expression: String) -> Double? { ScratchpadMath.evaluate(expression) }
+        expect(value("12 * 4 + 7") == 55
+               && value("2 + 3 * 4") == 14
+               && value("(2 + 3) * 4") == 20
+               && value("  ( 12 + 3 )  *  ( 2 - 1 )  ") == 15
+               && value("[2 + 3] * {4 - 1}") == 15
+               && value("2(3 + 4)") == 14
+               && value("(2 + 3)(4 + 1)") == 25
+               && value("8 / 2 * 2") == 8
+               && value("7 % 4") == 3
+               && value("2^3^2") == 512
+               && value("-2^2") == -4,
+               "arithmetic follows precedence, parentheses, brackets, signs and right-grouped powers, with or without spaces")
+        expect(value("1 / 0") == nil && value("2 +") == nil && value("hello") == nil
+               && value("2 3") == nil && value("42") == nil,
+               "an incomplete, unknown or operator-free line is not a calculation")
+        expect(ScratchpadMath.formatted(55) == "55"
+               && ScratchpadMath.formatted(0.1 + 0.2) == "0.3",
+               "results are written without noise from binary fractions")
+
+        let mathSource = "12 * 4 + 7\nnot math\n- [ ] 2 + 2\n- [x] 3 * 3 /x\n```\n5 + 5\n```\n> 6 / 2"
+        let math = ScratchpadSupport.mathLines(in: mathSource)
+        expect(math.map(\.result) == ["55", "4", "9", "3"]
+               && math.map(\.range) == [NSRange(location: 0, length: 10),
+                                        NSRange(location: 26, length: 5),
+                                        NSRange(location: 38, length: 5),
+                                        NSRange(location: 63, length: 5)],
+               "the editor finds a calculation in a plain line, a task, and a quote, and skips code")
+        expect(ScratchpadSupport.mathLines(in: "2 + 2 =").first?.result == "4"
+               && ScratchpadSupport.mathLines(in: "The total is 2 + 2").isEmpty,
+               "a trailing equals is a calculation, but a sentence containing one is not")
+        let spaced = ScratchpadSupport.mathLines(in: "  ( 12 + 3 ) * 2  \n- [ ] [2 + 3] * {4 - 1}")
+        expect(spaced.map(\.result) == ["30", "15"]
+               && spaced.map(\.expression) == ["( 12 + 3 ) * 2", "[2 + 3] * {4 - 1}"],
+               "spaces inside and around brackets do not stop a calculation, in a plain line or a task")
     }
 }

@@ -11,6 +11,7 @@ struct ScratchpadView: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(DefaultsKey.scratchpadBackgroundOpacity) private var backgroundOpacity = 0.0
     @AppStorage(DefaultsKey.scratchpadTextSize) private var storedTextSize = ScratchpadSupport.defaultTextSize
+    @AppStorage(DefaultsKey.scratchpadFont) private var storedFont = ScratchpadFontOption.system.id
     @State private var copied = false
     @State private var dialog: ScratchpadDialog?
     @State private var renameDraft = ""
@@ -20,6 +21,13 @@ struct ScratchpadView: View {
     private var text: ScratchpadFeatureStrings { FeatureStrings.scratchpad(l10n.language) }
     private var isEmpty: Bool { service.text.isEmpty }
     private var textSize: CGFloat { CGFloat(ScratchpadSupport.sanitizedTextSize(storedTextSize)) }
+    private var selectedFont: ScratchpadFontOption { ScratchpadFontOption.stored(storedFont) }
+    /// The placeholder is a SwiftUI `Text`, not the AppKit editor, so it
+    /// builds its face from the same option to sit on the first line.
+    private var placeholderFont: Font {
+        guard let family = selectedFont.family else { return .system(size: textSize) }
+        return .custom(family, size: textSize)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -289,11 +297,15 @@ struct ScratchpadView: View {
         ZStack {
             PlainTextEditor(text: $service.text,
                             fontSize: textSize,
+                            fontFamily: selectedFont.family,
                             textColor: .labelColor,
                             textContainerInset: Self.editorInset,
                             usesFindBar: true,
                             completesTaskBoxes: true,
                             continuesLists: true,
+                            rendersTaskCheckboxes: true,
+                            rendersInlineMath: true,
+                            onToggleTask: { service.toggleTask(box: $0) },
                             onCommandReturn: { service.togglePreview() },
                             isActive: !service.isPreviewing,
                             onCreate: { ScratchpadService.shared.registerTextView($0) })
@@ -305,7 +317,7 @@ struct ScratchpadView: View {
                         // NSTextView has no placeholder of its own; this sits at
                         // the exact spot of the first line and never takes clicks.
                         Text(text.placeholder)
-                            .font(.system(size: textSize))
+                            .font(placeholderFont)
                             .foregroundStyle(.tertiary)
                             .padding(.leading,
                                      Self.editorInset.width + PlainTextEditor.lineFragmentPadding)
